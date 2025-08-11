@@ -43,7 +43,7 @@ func Registerroutes() {
 	router.Handle("/DefaultRoleName", http.HandlerFunc(commoncontrollers.DefaultRoleName))
 	router.Handle("/UserRoles", http.HandlerFunc(commoncontrollers.GetRoles))
 	router.Handle("/Returntouser", http.HandlerFunc(commoncontrollers.GetReturntouser))
-
+	router.HandleFunc("/DynamicActivitySequence", http.HandlerFunc(commoncontrollers.DynamicActivitySequence))
 	// CORS configuration
 	c := cors.New(cors.Options{
 		AllowedOrigins:   []string{"*"}, // Use specific origin(s) in production
