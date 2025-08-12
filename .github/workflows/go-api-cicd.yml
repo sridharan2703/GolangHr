@@ -2,9 +2,9 @@ name: Go API CI/CD
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "master" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "master" ]
 
 jobs:
   build-test-deploy:
@@ -17,7 +17,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.24'
+          go-version: '1.21'
 
       - name: Install dependencies
         run: go mod download
@@ -31,9 +31,9 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
 
-      - name: Deploy to Server
+      - name: Deploy and restart
         env:
           SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           sshpass -p "$SSHPASS" scp -o StrictHostKeyChecking=no app ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.TARGET_PATH }}
-          sshpass -p "$SSHPASS" ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "cd ${{ secrets.TARGET_PATH }} && pkill app || true && ./app &"
+          sshpass -p "$SSHPASS" ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "pkill app || true && cd ${{ secrets.TARGET_PATH }} && nohup ./app &"
