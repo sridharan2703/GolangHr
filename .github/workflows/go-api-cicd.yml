@@ -23,23 +23,21 @@ jobs:
         run: go mod download
 
       - name: Build binary
-        run: go build 
+        run: go build -o app
 
       - name: Run tests
-        run: go test 
+        run: go test ./...
 
       - name: Install sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
 
-      -  name: Deploy and restart (TEST ONLY)
+      - name: Deploy and restart (TEST ONLY)
         run: |
           sshpass -p "ZvfRUDo}q=Gti1}UwRtN" \
             scp -o StrictHostKeyChecking=no app Admin_wf@20.197.1.81:/home/Admin_wf/Test/WFHR
-
           sshpass -p "ZvfRUDo}q=Gti1}UwRtN" \
             ssh -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 "
               cd /home/Admin_wf/Test/WFHR && \
               pkill -f ./app || true && \
               nohup ./app > app.log 2>&1 &
             "
-
