@@ -42,3 +42,4 @@ jobs:
               pkill -f ./app || true && \
               nohup ./app > app.log 2>&1 &
             "
+
