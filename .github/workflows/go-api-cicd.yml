@@ -31,9 +31,14 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
 
-      - name: Deploy and restart
-        env:
-          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+      -  name: Deploy and restart (TEST ONLY)
         run: |
-          sshpass -p "$SSHPASS" scp -o StrictHostKeyChecking=no app ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:${{ secrets.TARGET_PATH }}
-          sshpass -p "$SSHPASS" ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} "pkill app || true && cd ${{ secrets.TARGET_PATH }} && nohup ./app &"
+          sshpass -p "ZvfRUDo}q=Gti1}UwRtN" \
+            scp -o StrictHostKeyChecking=no app Admin_wf@20.197.1.81:/home/Admin_wf/Test/WFHR
+
+          sshpass -p "ZvfRUDo}q=Gti1}UwRtN" \
+            ssh -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 "
+              cd /home/Admin_wf/Test/WFHR && \
+              pkill -f ./app || true && \
+              nohup ./app > app.log 2>&1 &
+            "
