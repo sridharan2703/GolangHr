@@ -25,7 +25,7 @@ import (
 func Registerroutes() {
 	// Create a new ServeMux router
 	router := http.NewServeMux()
-
+	//sjdkfsdfn
 	// Register your API routes
 	router.Handle("/HRldap", http.HandlerFunc(commoncontrollers.HandleLDAPAuth))
 	router.Handle("/SessionTimeout", http.HandlerFunc(commoncontrollers.SessionTimeoutHandler))
@@ -33,14 +33,12 @@ func Registerroutes() {
 	router.Handle("/Taskinbox", http.HandlerFunc(commoncontrollers.GetTaskinbox))
 	router.Handle("/Employeedetails", http.HandlerFunc(commoncontrollers.GetEmployeedetails))
 	router.Handle("/NOCupdateinsert", http.HandlerFunc(controllershumanresources.NOCHandler))
-	router.Handle("/NOCmaster", http.HandlerFunc(controllershumanresources.GetNOCmaster))
 	router.Handle("/Activitysequpdate", http.HandlerFunc(controllershumanresources.Activitysequpdate))
 	router.Handle("/NOCmasterremarks", http.HandlerFunc(controllershumanresources.GetNOCmasterremarks))
 	router.Handle("/Tasksummarycount", http.HandlerFunc(controllershumanresources.Gettasksummarycount))
 	router.Handle("/Tasksummary", http.HandlerFunc(controllershumanresources.Gettasksummary))
 	router.Handle("/NOCTaskreturn", http.HandlerFunc(controllershumanresources.NOCTaskreturn))
 	router.Handle("/NOCcommentsremarks", http.HandlerFunc(controllershumanresources.GetNOCremarks))
-	router.Handle("/DefaultRoleName", http.HandlerFunc(commoncontrollers.DefaultRoleName))
 	router.Handle("/UserRoles", http.HandlerFunc(commoncontrollers.GetRoles))
 	router.Handle("/Returntouser", http.HandlerFunc(commoncontrollers.GetReturntouser))
 	router.HandleFunc("/DynamicActivitySequence", http.HandlerFunc(commoncontrollers.DynamicActivitySequence))
