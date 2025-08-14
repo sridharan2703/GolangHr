@@ -1,0 +1,108 @@
+name: Deploy Go App to Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+          cache: false
+
+      - name: Build Go app
+        run: |
+          go mod tidy
+          go build -o app main.go
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 "echo '✅ SSH key authentication works'"
+
+      - name: Deploy to server (all files except ignored)
+        run: |
+          rsync -avz --delete \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude "*.log" \
+            --exclude "README.md" \
+            --exclude "go/pkg/" \
+            --exclude "go/bin/" \
+            --exclude "go/src/" \
+            -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
+            ./ Admin_wf@20.197.1.81:/home/Admin_wf/test2/WFHR/
+
+      - name: Restart application on server
+        run: |
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 << 'EOF'
+          set -e
+          echo "=== Deployment Script Started ==="
+          
+          cd /home/Admin_wf/test2/WFHR
+          echo "Current directory: $(pwd)"
+          
+          echo "Checking for processes using port 5000..."
+          PORT_PID=$(lsof -ti:5000 || echo "")
+          if [ -n "$PORT_PID" ]; then
+            echo "Found process(es) using port 5000: $PORT_PID"
+            kill -9 $PORT_PID
+            sleep 2
+          else
+            echo "No processes found using port 5000"
+          fi
+          
+          if pgrep -f "/home/Admin_wf/test2/WFHR/app" > /dev/null; then
+            echo "Found existing app process, stopping it..."
+            pkill -f "/home/Admin_wf/test2/WFHR/app"
+            sleep 2
+          fi
+          
+          if lsof -ti:5000 > /dev/null 2>&1; then
+            echo "❌ Port 5000 is still in use"
+            lsof -i:5000
+            exit 1
+          else
+            echo "✅ Port 5000 is free"
+          fi
+          
+          chmod +x ./app
+          
+          echo "Starting application..."
+          nohup ./app > app.log 2>&1 &
+          APP_PID=$!
+          echo "Started with PID: $APP_PID"
+          
+          sleep 5
+          
+          if ps -p $APP_PID > /dev/null 2>&1; then
+            echo "✅ Application is running with PID: $APP_PID"
+            if lsof -i:5000 > /dev/null 2>&1; then
+              echo "✅ Application is listening on port 5000"
+              lsof -i:5000
+            else
+              echo "⚠️ Application running but not listening yet"
+              tail -10 app.log
+            fi
+          else
+            echo "❌ Application failed to start"
+            cat app.log || true
+            exit 1
+          fi
+          
+          echo "=== Recent Log Entries ==="
+          tail -5 app.log || echo "No logs found"
+          
+          echo "=== Deployment Completed Successfully ==="
+          EOF
