@@ -14,7 +14,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetch all history for version info
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -25,7 +25,6 @@ jobs:
       - name: Generate version information
         id: version
         run: |
-          # Get version from git tags or commit
           if git describe --tags --exact-match 2>/dev/null; then
             VERSION=$(git describe --tags --exact-match)
           else
@@ -44,19 +43,15 @@ jobs:
           echo "🏷️ Version: $VERSION"
           echo "🔗 Commit: $COMMIT_HASH"
           echo "📅 Build Date: $BUILD_DATE"
-          echo "🌿 Branch: $BRANCH"
 
-      - name: Build Go app with version info
+      - name: Build Go app
         run: |
           go mod tidy
+          go build -o app main.go
           
-          # Build with version information embedded in binary metadata
-          go build -ldflags "
-            -X 'main.BuildVersion=${{ steps.version.outputs.VERSION }}'
-            -X 'main.BuildCommit=${{ steps.version.outputs.COMMIT_HASH }}'
-            -X 'main.BuildDate=${{ steps.version.outputs.BUILD_DATE }}'
-            -X 'main.BuildBranch=${{ steps.version.outputs.BRANCH }}'
-          " -o app main.go
+          # Verify binary was created
+          ls -la app
+          file app
           
           # Create version info file
           cat > version.json << EOF
@@ -64,13 +59,9 @@ jobs:
             "version": "${{ steps.version.outputs.VERSION }}",
             "commit": "${{ steps.version.outputs.COMMIT_HASH }}",
             "build_date": "${{ steps.version.outputs.BUILD_DATE }}",
-            "branch": "${{ steps.version.outputs.BRANCH }}",
-            "repository": "${{ github.repository }}"
+            "branch": "${{ steps.version.outputs.BRANCH }}"
           }
           EOF
-          
-          echo "Version file created:"
-          cat version.json
 
       - name: Setup SSH key
         run: |
@@ -83,37 +74,16 @@ jobs:
           echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 20.197.1.81 >> ~/.ssh/known_hosts
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 "echo '✅ SSH key authentication works'"
+          ssh -i ~/.ssh/id_rsa Admin_wf@20.197.1.81 "echo '✅ SSH connection works'"
 
-      - name: Deploy to server
+      - name: Stop existing application
         run: |
-          echo "🚀 Deploying version ${{ steps.version.outputs.VERSION }}"
+          ssh -i ~/.ssh/id_rsa Admin_wf@20.197.1.81 << 'EOF'
+          echo "=== Stopping existing application ==="
           
-          rsync -avz --delete \
-            --exclude ".git/" \
-            --exclude ".github/" \
-            --exclude "*.log" \
-            --exclude "README.md" \
-            --exclude "go/pkg/" \
-            --exclude "go/bin/" \
-            --exclude "go/src/" \
-            --progress \
-            -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
-            ./ Admin_wf@20.197.1.81:/home/Admin_wf/test2/WFHR/
-
-      - name: Restart application with version logging
-        run: |
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 << 'EOF'
-          set -e
-          echo "=== Deployment Started: ${{ steps.version.outputs.VERSION }} ==="
+          cd /home/Admin_wf/test2/WFHR || exit 1
           
-          cd /home/Admin_wf/test2/WFHR
-          
-          # Log deployment info
-          echo "$(date): Deploying version ${{ steps.version.outputs.VERSION }} (commit: ${{ steps.version.outputs.COMMIT_HASH }})" >> deployment.log
-          
-          # Stop existing processes
-          echo "Stopping existing processes..."
+          # Stop processes using port 5000
           PORT_PID=$(lsof -ti:5000 2>/dev/null || echo "")
           if [ -n "$PORT_PID" ]; then
             echo "Killing processes using port 5000: $PORT_PID"
@@ -121,27 +91,84 @@ jobs:
             sleep 3
             kill -KILL $PORT_PID 2>/dev/null || true
             sleep 2
+          else
+            echo "No processes found using port 5000"
           fi
           
+          # Stop app processes by path
           if pgrep -f "/home/Admin_wf/test2/WFHR/app" > /dev/null 2>&1; then
+            echo "Stopping app processes..."
             pkill -TERM -f "/home/Admin_wf/test2/WFHR/app" || true
             sleep 3
             pkill -KILL -f "/home/Admin_wf/test2/WFHR/app" 2>/dev/null || true
             sleep 2
           fi
           
-          # Archive old version if exists
+          # Backup existing binary
           if [ -f "./app" ]; then
-            mv ./app ./app.${{ steps.version.outputs.VERSION }}.backup 2>/dev/null || rm -f ./app
+            echo "Backing up existing binary..."
+            mv ./app ./app.backup.$(date +%s) 2>/dev/null || rm -f ./app
           fi
           
           # Verify port is free
           if lsof -ti:5000 > /dev/null 2>&1; then
-            echo "❌ Port 5000 still in use"
+            echo "❌ Port 5000 still in use after cleanup"
+            lsof -i:5000
+            exit 1
+          else
+            echo "✅ Port 5000 is now free"
+          fi
+          
+          echo "✅ Application stopped successfully"
+          EOF
+
+      - name: Deploy binary and files
+        run: |
+          echo "🚀 Deploying version ${{ steps.version.outputs.VERSION }}"
+          
+          # First, copy the binary specifically
+          echo "Copying binary..."
+          scp -i ~/.ssh/id_rsa app Admin_wf@20.197.1.81:/home/Admin_wf/test2/WFHR/app
+          
+          # Then sync other files
+          echo "Syncing other files..."
+          rsync -avz --delete \
+            --exclude ".git/" \
+            --exclude ".github/" \
+            --exclude "*.log" \
+            --exclude "*.backup.*" \
+            --exclude "README.md" \
+            --exclude "go.sum" \
+            --exclude "app" \
+            --progress \
+            -e "ssh -i ~/.ssh/id_rsa" \
+            ./ Admin_wf@20.197.1.81:/home/Admin_wf/test2/WFHR/
+          
+          # Verify binary exists on server
+          ssh -i ~/.ssh/id_rsa Admin_wf@20.197.1.81 \
+            "cd /home/Admin_wf/test2/WFHR && ls -la app && file app"
+
+      - name: Start application
+        run: |
+          ssh -i ~/.ssh/id_rsa Admin_wf@20.197.1.81 << 'EOF'
+          set -e
+          echo "=== Starting Application: ${{ steps.version.outputs.VERSION }} ==="
+          
+          cd /home/Admin_wf/test2/WFHR
+          echo "Working directory: $(pwd)"
+          
+          # Log deployment
+          echo "$(date): Deploying version ${{ steps.version.outputs.VERSION }} (commit: ${{ steps.version.outputs.COMMIT_HASH }})" >> deployment.log
+          
+          # Verify binary exists and set permissions
+          if [ ! -f "./app" ]; then
+            echo "❌ Binary file ./app not found"
+            ls -la
             exit 1
           fi
           
           chmod +x ./app
+          echo "✅ Binary permissions set"
           
           # Create startup script with version info
           cat > start_app.sh << 'SCRIPT'
@@ -159,36 +186,51 @@ jobs:
           echo "Starting application version ${{ steps.version.outputs.VERSION }}..."
           nohup ./start_app.sh > app.log 2>&1 &
           APP_PID=$!
-          echo "Started with PID: $APP_PID"
+          echo "Application started with PID: $APP_PID"
           
+          # Wait for startup
+          echo "Waiting for application to start..."
           sleep 8
           
+          # Check if process is running
           if ps -p $APP_PID > /dev/null 2>&1; then
-            echo "✅ Application running (PID: $APP_PID)"
+            echo "✅ Application process is running (PID: $APP_PID)"
+            
+            # Check if listening on port
             sleep 3
             if lsof -i:5000 > /dev/null 2>&1; then
-              echo "✅ Application listening on port 5000"
+              echo "✅ Application is listening on port 5000"
+              lsof -i:5000
               echo "$(date): Successfully deployed version ${{ steps.version.outputs.VERSION }}" >> deployment.log
             else
-              echo "⚠️ Application not listening yet"
+              echo "⚠️ Application running but not listening on port 5000 yet"
+              echo "Checking logs..."
               tail -10 app.log
             fi
           else
-            echo "❌ Application failed to start"
-            cat app.log 2>/dev/null || echo "No log file"
+            echo "❌ Application failed to start or crashed"
+            echo "=== Application Log ==="
+            cat app.log 2>/dev/null || echo "No log file found"
             echo "$(date): Failed to deploy version ${{ steps.version.outputs.VERSION }}" >> deployment.log
             exit 1
           fi
           
+          echo "=== Recent Log Entries ==="
+          tail -5 app.log 2>/dev/null || echo "No logs available"
+          
           echo "=== Deployment Completed: ${{ steps.version.outputs.VERSION }} ==="
           EOF
 
-      - name: Create deployment record
+      - name: Health check
         run: |
-          # Record this deployment in GitHub
-          echo "## Deployment Record" >> deployment_record.md
-          echo "- **Version**: ${{ steps.version.outputs.VERSION }}" >> deployment_record.md
-          echo "- **Commit**: ${{ steps.version.outputs.COMMIT_HASH }}" >> deployment_record.md
-          echo "- **Date**: ${{ steps.version.outputs.BUILD_DATE }}" >> deployment_record.md
-          echo "- **Status**: Deployed to production" >> deployment_record.md
-          echo "---" >> deployment_record.md
+          echo "=== Performing connectivity check ==="
+          sleep 5
+          
+          if command -v curl >/dev/null 2>&1; then
+            if curl -f --connect-timeout 10 --max-time 30 \
+               http://20.197.1.81:5000 >/dev/null 2>&1; then
+              echo "✅ Application is responding"
+            else
+              echo "⚠️ Application may still be starting"
+            fi
+          fi
