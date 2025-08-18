@@ -8,31 +8,87 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for version info
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: 1.21
-          cache: false
+          cache: true
 
-      - name: Build Go app
+      - name: Generate version information
+        id: version
+        run: |
+          # Get version from git tags or commit
+          if git describe --tags --exact-match 2>/dev/null; then
+            VERSION=$(git describe --tags --exact-match)
+          else
+            VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0-$(git rev-parse --short HEAD)")
+          fi
+          
+          COMMIT_HASH=$(git rev-parse --short HEAD)
+          BUILD_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_OUTPUT
+          echo "BUILD_DATE=$BUILD_DATE" >> $GITHUB_OUTPUT
+          echo "BRANCH=$BRANCH" >> $GITHUB_OUTPUT
+          
+          echo "🏷️ Version: $VERSION"
+          echo "🔗 Commit: $COMMIT_HASH"
+          echo "📅 Build Date: $BUILD_DATE"
+          echo "🌿 Branch: $BRANCH"
+
+      - name: Build Go app with version info
         run: |
           go mod tidy
-          go build -o app main.go
+          
+          # Build with version information embedded in binary metadata
+          go build -ldflags "
+            -X 'main.BuildVersion=${{ steps.version.outputs.VERSION }}'
+            -X 'main.BuildCommit=${{ steps.version.outputs.COMMIT_HASH }}'
+            -X 'main.BuildDate=${{ steps.version.outputs.BUILD_DATE }}'
+            -X 'main.BuildBranch=${{ steps.version.outputs.BRANCH }}'
+          " -o app main.go
+          
+          # Create version info file
+          cat > version.json << EOF
+          {
+            "version": "${{ steps.version.outputs.VERSION }}",
+            "commit": "${{ steps.version.outputs.COMMIT_HASH }}",
+            "build_date": "${{ steps.version.outputs.BUILD_DATE }}",
+            "branch": "${{ steps.version.outputs.BRANCH }}",
+            "repository": "${{ github.repository }}"
+          }
+          EOF
+          
+          echo "Version file created:"
+          cat version.json
 
       - name: Setup SSH key
         run: |
+          if [ -z "${{ secrets.DEPLOY_KEY }}" ]; then
+            echo "❌ DEPLOY_KEY secret is not set"
+            exit 1
+          fi
+          
           mkdir -p ~/.ssh
           echo "${{ secrets.DEPLOY_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 20.197.1.81 >> ~/.ssh/known_hosts
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 "echo '✅ SSH key authentication works'"
 
-      - name: Deploy to server (all files except ignored)
+      - name: Deploy to server
         run: |
+          echo "🚀 Deploying version ${{ steps.version.outputs.VERSION }}"
+          
           rsync -avz --delete \
             --exclude ".git/" \
             --exclude ".github/" \
@@ -41,68 +97,98 @@ jobs:
             --exclude "go/pkg/" \
             --exclude "go/bin/" \
             --exclude "go/src/" \
+            --progress \
             -e "ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no" \
             ./ Admin_wf@20.197.1.81:/home/Admin_wf/test2/WFHR/
 
-      - name: Restart application on server
+      - name: Restart application with version logging
         run: |
           ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no Admin_wf@20.197.1.81 << 'EOF'
           set -e
-          echo "=== Deployment Script Started ==="
+          echo "=== Deployment Started: ${{ steps.version.outputs.VERSION }} ==="
           
           cd /home/Admin_wf/test2/WFHR
-          echo "Current directory: $(pwd)"
           
-          echo "Checking for processes using port 5000..."
-          PORT_PID=$(lsof -ti:5000 || echo "")
+          # Log deployment info
+          echo "$(date): Deploying version ${{ steps.version.outputs.VERSION }} (commit: ${{ steps.version.outputs.COMMIT_HASH }})" >> deployment.log
+          
+          # Stop existing processes
+          echo "Stopping existing processes..."
+          PORT_PID=$(lsof -ti:5000 2>/dev/null || echo "")
           if [ -n "$PORT_PID" ]; then
-            echo "Found process(es) using port 5000: $PORT_PID"
-            kill -9 $PORT_PID
-            sleep 2
-          else
-            echo "No processes found using port 5000"
-          fi
-          
-          if pgrep -f "/home/Admin_wf/test2/WFHR/app" > /dev/null; then
-            echo "Found existing app process, stopping it..."
-            pkill -f "/home/Admin_wf/test2/WFHR/app"
+            echo "Killing processes using port 5000: $PORT_PID"
+            kill -TERM $PORT_PID 2>/dev/null || true
+            sleep 3
+            kill -KILL $PORT_PID 2>/dev/null || true
             sleep 2
           fi
           
+          if pgrep -f "/home/Admin_wf/test2/WFHR/app" > /dev/null 2>&1; then
+            pkill -TERM -f "/home/Admin_wf/test2/WFHR/app" || true
+            sleep 3
+            pkill -KILL -f "/home/Admin_wf/test2/WFHR/app" 2>/dev/null || true
+            sleep 2
+          fi
+          
+          # Archive old version if exists
+          if [ -f "./app" ]; then
+            mv ./app ./app.${{ steps.version.outputs.VERSION }}.backup 2>/dev/null || rm -f ./app
+          fi
+          
+          # Verify port is free
           if lsof -ti:5000 > /dev/null 2>&1; then
-            echo "❌ Port 5000 is still in use"
-            lsof -i:5000
+            echo "❌ Port 5000 still in use"
             exit 1
-          else
-            echo "✅ Port 5000 is free"
           fi
           
           chmod +x ./app
           
-          echo "Starting application..."
-          nohup ./app > app.log 2>&1 &
+          # Create startup script with version info
+          cat > start_app.sh << 'SCRIPT'
+          #!/bin/bash
+          echo "=== Application Startup ==="
+          echo "Version: ${{ steps.version.outputs.VERSION }}"
+          echo "Commit: ${{ steps.version.outputs.COMMIT_HASH }}"
+          echo "Build Date: ${{ steps.version.outputs.BUILD_DATE }}"
+          echo "Started: $(date)"
+          echo "=========================="
+          ./app
+          SCRIPT
+          chmod +x start_app.sh
+          
+          echo "Starting application version ${{ steps.version.outputs.VERSION }}..."
+          nohup ./start_app.sh > app.log 2>&1 &
           APP_PID=$!
           echo "Started with PID: $APP_PID"
           
-          sleep 5
+          sleep 8
           
           if ps -p $APP_PID > /dev/null 2>&1; then
-            echo "✅ Application is running with PID: $APP_PID"
+            echo "✅ Application running (PID: $APP_PID)"
+            sleep 3
             if lsof -i:5000 > /dev/null 2>&1; then
-              echo "✅ Application is listening on port 5000"
-              lsof -i:5000
+              echo "✅ Application listening on port 5000"
+              echo "$(date): Successfully deployed version ${{ steps.version.outputs.VERSION }}" >> deployment.log
             else
-              echo "⚠️ Application running but not listening yet"
+              echo "⚠️ Application not listening yet"
               tail -10 app.log
             fi
           else
             echo "❌ Application failed to start"
-            cat app.log || true
+            cat app.log 2>/dev/null || echo "No log file"
+            echo "$(date): Failed to deploy version ${{ steps.version.outputs.VERSION }}" >> deployment.log
             exit 1
           fi
           
-          echo "=== Recent Log Entries ==="
-          tail -5 app.log || echo "No logs found"
-          
-          echo "=== Deployment Completed Successfully ==="
+          echo "=== Deployment Completed: ${{ steps.version.outputs.VERSION }} ==="
           EOF
+
+      - name: Create deployment record
+        run: |
+          # Record this deployment in GitHub
+          echo "## Deployment Record" >> deployment_record.md
+          echo "- **Version**: ${{ steps.version.outputs.VERSION }}" >> deployment_record.md
+          echo "- **Commit**: ${{ steps.version.outputs.COMMIT_HASH }}" >> deployment_record.md
+          echo "- **Date**: ${{ steps.version.outputs.BUILD_DATE }}" >> deployment_record.md
+          echo "- **Status**: Deployed to production" >> deployment_record.md
+          echo "---" >> deployment_record.md
